@@ -4,6 +4,7 @@ import { validateStacObject } from "../parsing/json_validator.js"
 import { addToQueue } from "./queue_manager.js"
 import { logger } from "./src/config/logger.js"
 import { markSourceCrawled } from "./source_manager.js"
+import { parseCollection } from "../parsing/parser_functions.js"
 
 //helping functions for the crawler engine
 
@@ -89,8 +90,11 @@ export function makeHandleSTACObject(deps = {}) {
                     parentSourceId = currentSourceId
                 }
 
-                // save collection data with FK to its parent source (if available)
-                await upsertCollectionFn({ ...STACObject, source_id: parentSourceId })
+                // Parse collection to extract metadata and inject source ID
+                const parsedCollection = parseCollection(STACObject, parentSourceId, new Date());
+                if (parsedCollection) {
+                    await upsertCollectionFn(parsedCollection);
+}
 
             } else {
                 return
@@ -170,19 +174,10 @@ export async function crawlStacApi(source) {
 
         logger.info(`Found ${collections.length} collections in API ${source.url}`);
 
-        //Iterate and Save
-        for (const collection of collections) {
-            
-            // MAPPING: We must inject the source_id!
-            const collectionToSave = {
-                ...collection,
-                source_id: source.id, // Link to the parent source
-                
-                // If bbox is missing in root, try to extract it from 'extent'
-                bbox: collection.extent?.spatial?.bbox?.[0] || collection.bbox
-            };
-
-            await upsertCollection(collectionToSave);
+       // Parse API collection to extract metadata and prepare for DB upsert
+        const parsedCollection = parseCollection(collection, source.id, new Date());
+        if (parsedCollection) {
+            await upsertCollection(parsedCollection);
         }
 
         // Mark as crawled (Update Timestamp in DB)
