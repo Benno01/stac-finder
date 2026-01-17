@@ -1,9 +1,8 @@
 //imports
-import { getSourceIdByUrl, upsertCollection, upsertSource } from "../data_management/db_writer.js"
+import { getSourceIdByUrl, upsertCollection, upsertSource, getLastCrawledTimestamp } from "../data_management/db_writer.js"
 import { validateStacObject } from "../parsing/json_validator.js"
 import { addToQueue } from "./queue_manager.js"
 import { logger } from "./src/config/logger.js"
-import { markSourceCrawled } from "./source_manager.js"
 
 //helping functions for the crawler engine
 
@@ -24,6 +23,7 @@ export function makeHandleSTACObject(deps = {}) {
         addToQueue: addToQueueFn = addToQueue,
         getChildURLs: getChildURLsFn = getChildURLs,
         logger: loggerFn = logger,
+        getLastCrawledTimestamp: getLastCrawledTimestampFn = getLastCrawledTimestamp, 
     } = deps
 
     return async function handleSTACObjectImpl(STACObject, Link, parentUrl = null) {
@@ -31,6 +31,9 @@ export function makeHandleSTACObject(deps = {}) {
         //only run the following code if the stac object is valid
         if (validate(STACObject).valid) {
             
+            // Get last crawl time before upsertSource updates it to NOW()
+            const lastCrawled = await getLastCrawledTimestampFn(Link);
+
             //check the type of the stac object
             let STACObjectType = STACObject.type
 
@@ -72,8 +75,21 @@ export function makeHandleSTACObject(deps = {}) {
                     parentSourceId = currentSourceId
                 }
 
-                // save collection data with FK to its parent source (if available)
-                await upsertCollectionFn({ ...STACObject, source_id: parentSourceId })
+                // Check if STAC object is newer than last crawl
+                const sourceUpdated = STACObject.properties?.updated || STACObject.updated;
+                let shouldUpdate = true;
+
+                if (lastCrawled && sourceUpdated) {
+                    if (new Date(sourceUpdated) <= new Date(lastCrawled)) {
+                        shouldUpdate = false;
+                        loggerFn.info(`Skipping update: ${Link} not modified.`);
+                    }
+                }
+
+                // Only upsert if content has changed
+                if (shouldUpdate) {
+                    await upsertCollectionFn({ ...STACObject, source_id: parentSourceId })
+                }
 
                 return childs
 
